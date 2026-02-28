@@ -963,7 +963,8 @@ async function validateWithOptimizedProvider(
   records.forEach((record) => {
     if (!record.is_valid) return; // Skip invalid records
 
-    const domain = record.domain.toLowerCase();
+    // CRITICAL FIX: Normalize domain by trimming whitespace
+    const domain = record.domain.toLowerCase().trim();
 
     // Initialize arrays if not exists
     if (!domainToSellerIds.has(domain)) {
@@ -1024,7 +1025,8 @@ async function validateWithOptimizedProvider(
         return record; // Skip invalid records
       }
 
-      const domain = record.domain.toLowerCase();
+      // CRITICAL FIX: Normalize domain by trimming whitespace (must match the same normalization as above)
+      const domain = record.domain.toLowerCase().trim();
       const sellersMap = domainSellersMap.get(domain) || new Map();
       const metadata = domainMetadataMap.get(domain) || {};
 
