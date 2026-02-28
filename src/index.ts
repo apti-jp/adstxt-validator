@@ -11,6 +11,9 @@ export enum Severity {
   INFO = 'info',
 }
 
+export type WarningParams = Record<string, unknown>;
+export type WarningDetail = { key: string; params?: WarningParams; severity?: Severity };
+
 // Validation keys without namespace prefixes for cleaner structure
 export const VALIDATION_KEYS = {
   MISSING_FIELDS: 'missingFields',
@@ -107,7 +110,7 @@ export interface Seller {
   domain?: string;
   seller_type?: 'PUBLISHER' | 'INTERMEDIARY' | 'BOTH';
   is_confidential?: 0 | 1;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 export interface SellersJsonMetadata {
@@ -115,7 +118,7 @@ export interface SellersJsonMetadata {
   contact_email?: string;
   contact_address?: string;
   seller_count?: number;
-  identifiers?: any[];
+  identifiers?: Array<Record<string, unknown>>;
 }
 
 export interface CacheInfo {
@@ -135,8 +138,8 @@ export interface ParsedAdsTxtEntryBase {
   warning?: string;
   validation_key?: string;
   severity?: Severity;
-  warning_params?: Record<string, any>;
-  all_warnings?: Array<{ key: string; params?: Record<string, any>; severity?: Severity }>;
+  warning_params?: WarningParams;
+  all_warnings?: WarningDetail[];
   validation_error?: string;
 }
 
@@ -532,7 +535,7 @@ export function parseAdsTxtContent(content: string, publisherDomain?: string): P
 function createWarningRecord(
   record: ParsedAdsTxtRecord,
   validationKey: string,
-  params: Record<string, any> = {},
+  params: WarningParams = {},
   severity: Severity = Severity.WARNING,
   additionalProps: Partial<ParsedAdsTxtRecord> = {}
 ): ParsedAdsTxtRecord {
@@ -567,9 +570,9 @@ function createDuplicateWarningRecord(
  * Logger helper to standardize logging
  */
 export type Logger = {
-  info: (message: string, ...args: any[]) => void;
-  error: (message: string, ...args: any[]) => void;
-  debug: (message: string, ...args: any[]) => void;
+  info: (...args: unknown[]) => void;
+  error: (...args: unknown[]) => void;
+  debug: (...args: unknown[]) => void;
 };
 
 /**
@@ -580,7 +583,11 @@ function createLogger(): Logger {
   return {
     info: console.log,
     error: console.error,
-    debug: isDevelopment ? console.log : () => {},
+    debug: isDevelopment
+      ? console.log
+      : (...args: unknown[]) => {
+          void args;
+        },
   };
 }
 
@@ -593,7 +600,12 @@ export interface SellersJsonSellerRecord {
   domain?: string;
   seller_type?: 'PUBLISHER' | 'INTERMEDIARY' | 'BOTH';
   is_confidential?: 0 | 1;
-  [key: string]: any;
+  [key: string]: unknown;
+}
+
+export interface SellersJsonData extends SellersJsonMetadata {
+  sellers: SellersJsonSellerRecord[];
+  [key: string]: unknown;
 }
 
 /**
@@ -644,7 +656,7 @@ export async function crossCheckAdsTxtRecords(
   publisherDomain: string | undefined,
   parsedEntries: ParsedAdsTxtEntry[],
   cachedAdsTxtContent: string | null,
-  getSellersJson: (domain: string) => Promise<any | null>
+  getSellersJson: (domain: string) => Promise<SellersJsonData | null>
 ): Promise<ParsedAdsTxtEntry[]>;
 
 /**
@@ -656,7 +668,7 @@ export async function crossCheckAdsTxtRecords(
   cachedAdsTxtContent: string | null,
   sellersJsonProviderOrGetSellersJson:
     | SellersJsonProvider
-    | ((domain: string) => Promise<any | null>)
+    | ((domain: string) => Promise<SellersJsonData | null>)
 ): Promise<ParsedAdsTxtEntry[]> {
   const logger = createLogger();
 
@@ -848,12 +860,12 @@ function findDuplicateRecords(
 async function validateAgainstSellersJson(
   publisherDomain: string,
   records: ParsedAdsTxtRecord[],
-  getSellersJson: (domain: string) => Promise<any | null>,
+  getSellersJson: (domain: string) => Promise<SellersJsonData | null>,
   logger: Logger,
   allEntries: ParsedAdsTxtEntry[] = [] // Add allEntries parameter to pass all entries including variables
 ): Promise<ParsedAdsTxtRecord[]> {
   // Cache for sellers.json data and seller ID counts
-  const sellersJsonCache = new Map<string, any>();
+  const sellersJsonCache = new Map<string, SellersJsonData | null>();
   const domainSellerIdCountsMap = new Map<string, Map<string, number>>();
 
   // Validate each record in parallel
@@ -873,7 +885,8 @@ async function validateAgainstSellersJson(
           logger,
           allEntries // Pass all entries including variables
         );
-      } catch (error: any) {
+      } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
         logger.error(
           `Error validating against sellers.json for record (domain=${record.domain}, account_id=${record.account_id}):`,
           error
@@ -884,12 +897,12 @@ async function validateAgainstSellersJson(
           record,
           VALIDATION_KEYS.SELLERS_JSON_VALIDATION_ERROR,
           {
-            message: error.message,
+            message: errorMessage,
             domain: record.domain,
           },
           Severity.WARNING,
           {
-            validation_error: error.message,
+            validation_error: errorMessage,
           }
         );
       }
@@ -911,7 +924,7 @@ async function validateAgainstSellersJsonOptimized(
   records: ParsedAdsTxtRecord[],
   sellersJsonProviderOrGetSellersJson:
     | SellersJsonProvider
-    | ((domain: string) => Promise<any | null>),
+    | ((domain: string) => Promise<SellersJsonData | null>),
   logger: Logger,
   allEntries: ParsedAdsTxtEntry[] = []
 ): Promise<ParsedAdsTxtRecord[]> {
@@ -933,7 +946,7 @@ async function validateAgainstSellersJsonOptimized(
     // Fall back to legacy function for backward compatibility
     const getSellersJson = sellersJsonProviderOrGetSellersJson as (
       domain: string
-    ) => Promise<any | null>;
+    ) => Promise<SellersJsonData | null>;
     return await validateAgainstSellersJson(
       publisherDomain,
       records,
@@ -1041,7 +1054,9 @@ async function validateWithOptimizedProvider(
       const metadata = domainMetadataMap.get(domain) || {};
       // Use explicit sellers.json existence flag to avoid false "noSellersJson" when
       // sellers.json exists but no matching seller IDs were found
-      const hasSellersJson = domainHasSellersJsonMap.get(domain) ?? (sellersMap.size > 0 || Object.keys(metadata).length > 0);
+      const hasSellersJson =
+        domainHasSellersJsonMap.get(domain) ??
+        (sellersMap.size > 0 || Object.keys(metadata).length > 0);
 
       return await validateSingleRecordOptimized(
         record,
@@ -1078,9 +1093,10 @@ async function validateSingleRecordOptimized(
   // Check if sellers.json exists for this domain.
   // Use the explicit hasSellersJson flag when provided to correctly handle the case where
   // sellers.json exists but no matching seller IDs were found (which produces an empty sellersMap).
-  validationResult.hasSellerJson = hasSellersJson !== undefined
-    ? hasSellersJson
-    : (sellersMap.size > 0 || Object.keys(metadata).length > 0);
+  validationResult.hasSellerJson =
+    hasSellersJson !== undefined
+      ? hasSellersJson
+      : sellersMap.size > 0 || Object.keys(metadata).length > 0;
 
   if (!validationResult.hasSellerJson) {
     return createWarningRecord(
@@ -1163,9 +1179,9 @@ async function validateSingleRecordOptimized(
 async function validateSingleRecord(
   record: ParsedAdsTxtRecord,
   publisherDomain: string,
-  sellersJsonCache: Map<string, any>,
+  sellersJsonCache: Map<string, SellersJsonData | null>,
   domainSellerIdCountsMap: Map<string, Map<string, number>>,
-  getSellersJson: (domain: string) => Promise<any | null>,
+  getSellersJson: (domain: string) => Promise<SellersJsonData | null>,
   logger: Logger,
   allEntries: ParsedAdsTxtEntry[] = [] // Add allEntries parameter
 ): Promise<ParsedAdsTxtRecord> {
@@ -1284,13 +1300,14 @@ function createInitialValidationResult(): CrossCheckValidationResult {
  */
 async function getSellersJsonData(
   adSystemDomain: string,
-  sellersJsonCache: Map<string, any>,
-  getSellersJson: (domain: string) => Promise<any | null>,
+  sellersJsonCache: Map<string, SellersJsonData | null>,
+  getSellersJson: (domain: string) => Promise<SellersJsonData | null>,
   validationResult: CrossCheckValidationResult,
   logger: Logger
-): Promise<any> {
-  if (sellersJsonCache.has(adSystemDomain)) {
-    return sellersJsonCache.get(adSystemDomain);
+): Promise<SellersJsonData | null> {
+  const cachedData = sellersJsonCache.get(adSystemDomain);
+  if (cachedData !== undefined) {
+    return cachedData;
   }
 
   logger.info(`Fetching sellers.json for domain: ${adSystemDomain}`);
@@ -1516,7 +1533,7 @@ function validateResellerRelationship(
  */
 function createWarning(
   validationKey: string,
-  params: Record<string, any> = {},
+  params: WarningParams = {},
   severity: Severity = Severity.WARNING
 ) {
   return {
@@ -1533,8 +1550,8 @@ function generateWarnings(
   record: ParsedAdsTxtRecord,
   validationResult: CrossCheckValidationResult,
   publisherDomain: string
-): Array<{ key: string; params?: Record<string, any>; severity?: Severity }> {
-  const warnings: Array<{ key: string; params?: Record<string, any>; severity?: Severity }> = [];
+): WarningDetail[] {
+  const warnings: WarningDetail[] = [];
 
   // Case 11/16: Missing sellers.json
   if (!validationResult.hasSellerJson) {
