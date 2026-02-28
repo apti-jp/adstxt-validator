@@ -980,6 +980,8 @@ async function validateWithOptimizedProvider(
   // Batch fetch sellers for all domains
   const domainSellersMap = new Map<string, Map<string, Seller>>();
   const domainMetadataMap = new Map<string, SellersJsonMetadata>();
+  // Track which domains actually have sellers.json (separate from whether matching sellers were found)
+  const domainHasSellersJsonMap = new Map<string, boolean>();
 
   for (const [domain, sellerIds] of domainToSellerIds) {
     try {
@@ -991,8 +993,12 @@ async function validateWithOptimizedProvider(
         logger.info(`No sellers.json found for domain: ${domain}`);
         domainSellersMap.set(domain, new Map());
         domainMetadataMap.set(domain, {});
+        domainHasSellersJsonMap.set(domain, false);
         continue;
       }
+
+      // Domain has sellers.json - record this explicitly before fetching matching sellers
+      domainHasSellersJsonMap.set(domain, true);
 
       // Batch fetch sellers
       const batchResult = await provider.batchGetSellers(domain, sellerIds);
@@ -1015,6 +1021,10 @@ async function validateWithOptimizedProvider(
       logger.error(`Error fetching sellers for domain ${domain}:`, error);
       domainSellersMap.set(domain, new Map());
       domainMetadataMap.set(domain, {});
+      // On error, we can't confirm sellers.json exists
+      if (!domainHasSellersJsonMap.has(domain)) {
+        domainHasSellersJsonMap.set(domain, false);
+      }
     }
   }
 
@@ -1029,13 +1039,17 @@ async function validateWithOptimizedProvider(
       const domain = record.domain.toLowerCase().trim();
       const sellersMap = domainSellersMap.get(domain) || new Map();
       const metadata = domainMetadataMap.get(domain) || {};
+      // Use explicit sellers.json existence flag to avoid false "noSellersJson" when
+      // sellers.json exists but no matching seller IDs were found
+      const hasSellersJson = domainHasSellersJsonMap.get(domain) ?? (sellersMap.size > 0 || Object.keys(metadata).length > 0);
 
       return await validateSingleRecordOptimized(
         record,
         publisherDomain,
         sellersMap,
         metadata,
-        allEntries
+        allEntries,
+        hasSellersJson
       );
     })
   );
@@ -1055,13 +1069,18 @@ async function validateSingleRecordOptimized(
   publisherDomain: string,
   sellersMap: Map<string, Seller>,
   metadata: SellersJsonMetadata,
-  allEntries: ParsedAdsTxtEntry[]
+  allEntries: ParsedAdsTxtEntry[],
+  hasSellersJson?: boolean
 ): Promise<ParsedAdsTxtRecord> {
   // Initialize validation result
   const validationResult = createInitialValidationResult();
 
-  // Check if sellers.json exists for this domain
-  validationResult.hasSellerJson = sellersMap.size > 0 || Object.keys(metadata).length > 0;
+  // Check if sellers.json exists for this domain.
+  // Use the explicit hasSellersJson flag when provided to correctly handle the case where
+  // sellers.json exists but no matching seller IDs were found (which produces an empty sellersMap).
+  validationResult.hasSellerJson = hasSellersJson !== undefined
+    ? hasSellersJson
+    : (sellersMap.size > 0 || Object.keys(metadata).length > 0);
 
   if (!validationResult.hasSellerJson) {
     return createWarningRecord(
