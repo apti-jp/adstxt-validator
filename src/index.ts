@@ -996,49 +996,58 @@ async function validateWithOptimizedProvider(
   // Track which domains actually have sellers.json (separate from whether matching sellers were found)
   const domainHasSellersJsonMap = new Map<string, boolean>();
 
-  for (const [domain, sellerIds] of domainToSellerIds) {
-    try {
-      logger.info(`Fetching ${sellerIds.length} sellers for domain: ${domain}`);
+  // Fetch sellers for all domains in parallel (concurrency limit to avoid DB overload)
+  const CONCURRENCY = 5;
+  const domainEntries = Array.from(domainToSellerIds.entries());
 
-      // Check if domain has sellers.json first
-      const hasSellerJson = await provider.hasSellerJson(domain);
-      if (!hasSellerJson) {
-        logger.info(`No sellers.json found for domain: ${domain}`);
-        domainSellersMap.set(domain, new Map());
-        domainMetadataMap.set(domain, {});
-        domainHasSellersJsonMap.set(domain, false);
-        continue;
-      }
+  for (let i = 0; i < domainEntries.length; i += CONCURRENCY) {
+    const chunk = domainEntries.slice(i, i + CONCURRENCY);
+    await Promise.all(
+      chunk.map(async ([domain, sellerIds]) => {
+        try {
+          logger.info(`Fetching ${sellerIds.length} sellers for domain: ${domain}`);
 
-      // Domain has sellers.json - record this explicitly before fetching matching sellers
-      domainHasSellersJsonMap.set(domain, true);
+          // Check if domain has sellers.json first
+          const hasSellerJson = await provider.hasSellerJson(domain);
+          if (!hasSellerJson) {
+            logger.info(`No sellers.json found for domain: ${domain}`);
+            domainSellersMap.set(domain, new Map());
+            domainMetadataMap.set(domain, {});
+            domainHasSellersJsonMap.set(domain, false);
+            return;
+          }
 
-      // Batch fetch sellers
-      const batchResult = await provider.batchGetSellers(domain, sellerIds);
+          // Domain has sellers.json - record this explicitly before fetching matching sellers
+          domainHasSellersJsonMap.set(domain, true);
 
-      // Convert to Map for efficient lookup
-      const sellersMap = new Map<string, Seller>();
-      batchResult.results.forEach((result) => {
-        if (result.found && result.seller) {
-          sellersMap.set(result.sellerId, result.seller);
+          // Batch fetch sellers
+          const batchResult = await provider.batchGetSellers(domain, sellerIds);
+
+          // Convert to Map for efficient lookup
+          const sellersMap = new Map<string, Seller>();
+          batchResult.results.forEach((result) => {
+            if (result.found && result.seller) {
+              sellersMap.set(result.sellerId, result.seller);
+            }
+          });
+
+          domainSellersMap.set(domain, sellersMap);
+          domainMetadataMap.set(domain, batchResult.metadata);
+
+          logger.info(
+            `Found ${batchResult.found_count}/${batchResult.requested_count} sellers for domain: ${domain}`
+          );
+        } catch (error) {
+          logger.error(`Error fetching sellers for domain ${domain}:`, error);
+          domainSellersMap.set(domain, new Map());
+          domainMetadataMap.set(domain, {});
+          // On error, we can't confirm sellers.json exists
+          if (!domainHasSellersJsonMap.has(domain)) {
+            domainHasSellersJsonMap.set(domain, false);
+          }
         }
-      });
-
-      domainSellersMap.set(domain, sellersMap);
-      domainMetadataMap.set(domain, batchResult.metadata);
-
-      logger.info(
-        `Found ${batchResult.found_count}/${batchResult.requested_count} sellers for domain: ${domain}`
-      );
-    } catch (error) {
-      logger.error(`Error fetching sellers for domain ${domain}:`, error);
-      domainSellersMap.set(domain, new Map());
-      domainMetadataMap.set(domain, {});
-      // On error, we can't confirm sellers.json exists
-      if (!domainHasSellersJsonMap.has(domain)) {
-        domainHasSellersJsonMap.set(domain, false);
-      }
-    }
+      })
+    );
   }
 
   // Validate each record using the fetched data
