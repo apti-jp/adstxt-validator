@@ -1108,6 +1108,19 @@ async function validateSingleRecordOptimized(
       : sellersMap.size > 0 || Object.keys(metadata).length > 0;
 
   if (!validationResult.hasSellerJson) {
+    // Publishers may list their own domain as a DIRECT entry (e.g. direct bidder setup)
+    // without providing a sellers.json. Suppress the warning when the record domain
+    // matches OWNERDOMAIN and the relationship is DIRECT.
+    if (record.relationship === 'DIRECT') {
+      const ownerDomains = extractDomainsFromVariables(allEntries, 'OWNERDOMAIN');
+      const recordDomain = record.domain.toLowerCase().trim();
+      if (ownerDomains.some((domain) => domain === recordDomain)) {
+        return {
+          ...record,
+          validation_results: validationResult,
+        };
+      }
+    }
     return createWarningRecord(
       record,
       VALIDATION_KEYS.NO_SELLERS_JSON,
@@ -1211,6 +1224,19 @@ async function validateSingleRecord(
 
   // If no sellers.json available, add warning and return
   if (!sellersJsonData || !Array.isArray(sellersJsonData.sellers)) {
+    // Publishers may list their own domain as a DIRECT entry (e.g. direct bidder setup)
+    // without providing a sellers.json. Suppress the warning when the record domain
+    // matches OWNERDOMAIN and the relationship is DIRECT.
+    if (record.relationship === 'DIRECT') {
+      const ownerDomains = extractDomainsFromVariables(allEntries, 'OWNERDOMAIN');
+      const recordDomain = record.domain.toLowerCase().trim();
+      if (ownerDomains.some((domain) => domain === recordDomain)) {
+        return {
+          ...record,
+          validation_results: validationResult,
+        };
+      }
+    }
     return createWarningRecord(
       record,
       VALIDATION_KEYS.NO_SELLERS_JSON,
